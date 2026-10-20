@@ -1,0 +1,173 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Least privilege by default; individual jobs raise it only where needed.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same branch/PR.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_VERSION: 8.0.x
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  # Trivy gate behaviour. "0" = report only (pipeline stays green, finding is recorded).
+  # "1" = enforce: fail the build on fixable HIGH/CRITICAL findings.
+  # Flip this to "1" to demonstrate the gate, then fix the package to make it green again.
+  TRIVY_EXIT_CODE: "0"
+
+jobs:
+  build-test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore
+        run: dotnet restore tests/BuildInfo.Api.Tests
+
+      - name: Build
+        run: dotnet build tests/BuildInfo.Api.Tests -c Release --no-restore
+
+      - name: Test
+        run: dotnet test tests/BuildInfo.Api.Tests -c Release --no-build --logger "trx;LogFileName=results.trx"
+
+      # Early dependency check (source level), before any image exists.
+      - name: List vulnerable NuGet packages
+        run: dotnet list src/BuildInfo.Api package --vulnerable --include-transitive
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: "**/results.trx"
+
+  image:
+    name: Build, scan and publish image
+    needs: build-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write          # push to GHCR
+      security-events: write   # upload SARIF to the Security tab
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR requires a lowercase image name; repository owners can contain capitals.
+      - name: Compute image name and build metadata
+        run: |
+          echo "IMAGE=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
+          echo "BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image (not pushed yet)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+            BUILD_NUMBER=${{ github.run_number }}
+            BUILD_TIME=${{ env.BUILD_TIME }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Smoke test: run the real image and hit the real endpoints.
+      - name: Smoke test container
+        run: |
+          docker run -d --name smoke -p 8080:8080 "${IMAGE}:${GITHUB_SHA}"
+          for i in $(seq 1 15); do
+            curl -fsS http://localhost:8080/readyz && break
+            sleep 1
+          done
+          curl -fsS http://localhost:8080/version | tee /dev/stderr | grep -q "${GITHUB_SHA}"
+          docker rm -f smoke
+
+      # Pin to a released version (ideally a full commit SHA). Check the action's releases page for the latest.
+      - name: Trivy report (human-readable, never fails)
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
+          format: table
+          output: trivy-report.txt
+          severity: UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL
+          exit-code: "0"
+
+      - name: Add Trivy report to job summary
+        if: always()
+        run: |
+          {
+            echo '### Trivy image scan'
+            echo '```'
+            cat trivy-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Trivy SARIF (for the Security tab)
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
+          format: sarif
+          output: trivy-results.sarif
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+
+      # Code scanning upload needs a public repo or GitHub Advanced Security.
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+
+      - name: Upload Trivy report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report
+          path: |
+            trivy-report.txt
+            trivy-results.sarif
+
+      # The gate. Exit code comes from TRIVY_EXIT_CODE at the top of this file.
+      - name: Trivy gate (HIGH/CRITICAL with a fix available)
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          image-ref: ${{ env.IMAGE }}:${{ github.sha }}
+          format: table
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: ${{ env.TRIVY_EXIT_CODE }}
+
+      # Only runs if every step above passed, and only for pushes to main.
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker push "${IMAGE}:${GITHUB_SHA}"
+          docker push "${IMAGE}:latest"

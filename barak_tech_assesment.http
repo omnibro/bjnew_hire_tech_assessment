@@ -1,0 +1,6 @@
+@barak_tech_assesment_HostAddress = http://localhost:5011
+
+GET {{barak_tech_assesment_HostAddress}}/health_liveness_probe/
+Accept: application/json
+
+###
