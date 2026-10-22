@@ -3,7 +3,7 @@
 ## 1. Summary
 A small ASP.NET Core 8 Minimal API service (`/version`, `/healthz`, `/readyz`, `/whoami`, `/metrics`) packaged as a
 non-root container, built, tested, scanned (Trivy) and published to GHCR by GitHub Actions.
-Repo: TODO link  |  Successful run: TODO link  |  Image: TODO ghcr.io link
+Repo link: (https://github.com/omnibro/bjnew_hire_tech_assessment)
 
 ## 2. Pipeline diagram
 
@@ -33,7 +33,7 @@ flowchart LR
 | Least-privilege `permissions:` | Workflow token gets only what each job needs. |
 | Scan before push | A failing gate means nothing reaches the registry. |
 
-## 4. Findings/Challenges(section 6) 
+## 4. Findings/Challenges(in section 6) 
 
 ### 4.1 Deliberately vulnerable package
 `Newtonsoft.Json 9.0.1` added to `barak_tech_assesment.csproj` per the assessment brief.
@@ -54,16 +54,30 @@ flowchart LR
 TODO: what you changed, how you verified (rerun scan output), and any breaking-change considerations
 when jumping several major versions of a dependency.
 
-## 6. Problems hit and how I solved them
-TODO (this section is where reviewers learn the most about you)
+## 6. Problems hit
+Ran into issues getting the Docker image to run
+Was unable to get the docker image to properly gate
+Trivy scan failed due to timeout error, tried increasing timeout threshold but need more time to resolve persisting issues
 
-## 7. What I'd do next
+## 7. What I'd do next/Pression from here
+- Include controllers or dependency injection
 - Kubernetes manifests with the probes, resource limits and a read-only root filesystem
 - Chiseled/distroless base image to shrink the OS attack surface
 - SBOM generation and image signing (Syft, cosign)
 - Dependabot for NuGet, Docker and Actions updates
 - Pin third-party actions to commit SHAs
 - Real metrics via OpenTelemetry/prometheus-net and an alert on failed health checks
+- Overall increase in complexity
+
+  ## 8. Reflection
+  To begin I think this technical assessment was a very good task to gauge the general understanding and capability of a junior DevOps engineer. As mentioned in the assignment, "this is close to what we actually do here". Before this technical assessment I grasped the theoretical principles which define docker/containerization, configuration files, and Restful APIs. Now after attempting this technical assessment I now truly see how the concepts would work together and be executed in a production environment. Thank you for this opportunity. To answer the question given in the brief "Format check, test, security scan — if all three could run in parallel instead of sequentially, would you? What do you gain, what do you risk? The main upside to be gained running sequentially is speed of execution especially at scale. The main risks being concurrency issues or error jamming which could lead to corrupted data. "Where do secrets live in your pipeline? What's the blast radius if one leaks into a log line?" In my case secrets live in encrypted keys, and as it stands the entire pipeline could be compromised.
+  "our Trivy gate uses --ignore-unfixed. A base-image CVE that had no fix gets one next month. Nothing in your pipeline
+catches that automatically. What's the gap, how do you close it?" The pipeline scans once, at build time, and only when someone pushes. --ignore-unfixed makes that worse in one specific way, a CVE with no fix is invisible at build time, and when a fix lands next month, nothing re-evaluates it. The fix is to rescan what's published more frequently, then rebuild on a schedule so the fix reaches the image.
+
+"If this needed 3 replicas behind a load balancer instead of one docker run, what's the smallest realistic next step — and
+what would you explicitly not try to solve with a Dockerfile change alone?"
+The best solution I can think of is to run three copies of the same image behind a reverse proxy on one host, using Docker Compose. Considering a Dockerfile defines what one container contains, and most of what a multi-replica setup needs sits outside that I wouldn't try to solve traffic distribution, routing and TLS with a Dockerfile change alone.
+
 
 ## 8. Run it yourself
 ```bash
