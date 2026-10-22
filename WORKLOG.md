@@ -9,31 +9,20 @@ Repo: TODO link  |  Successful run: TODO link  |  Image: TODO ghcr.io link
 
 ```mermaid
 flowchart LR
-    A[Push or PR to main] --> B
-
-    subgraph B[Job 1: build-test]
-        direction TB
-        B1[restore + build] --> B2[xUnit tests]
-        B2 --> B3[dotnet list package --vulnerable]
-    end
-
-    B --> C
-
-    subgraph C[Job 2: image]
-        direction TB
-        C1[docker build<br/>GIT_SHA, BUILD_NUMBER, BUILD_TIME] --> C2[smoke test container]
-        C2 --> C3[Trivy report + SARIF]
-        C3 --> C4{Trivy gate<br/>HIGH/CRITICAL fixable}
-    end
-
-    C4 -- pass and branch is main --> D[(GHCR<br/>tag: commit SHA + latest)]
-    C4 -- fail --> E[Build fails, nothing published]
+    A["Push or PR to main"] --> F["1. Format check<br/>dotnet format --verify-no-changes"]
+    F --> B["2. Build and test<br/>xUnit"]
+    B --> D["3. Dependency scan<br/>NuGet audit report"]
+    D --> I["4. Docker build<br/>smoke test<br/>Trivy image gate"]
+    I -- "gate fails" --> X["Stop: nothing published"]
+    I -- "pass, main only" --> P[("5. Push to GHCR<br/>tag: commit SHA")]
+    P --> S["6. Deploy to staging<br/>pull image, replace container,<br/>run with APP_VERSION=tag"]
+    S --> V["Verify /version<br/>appVersion equals tag"]
 ```
 
 ## 3. Decisions and Reasoning
 | Decision | Reasoning |
 |---|---|
-| Build-metadata service as the app | Tiny code surface, so effort goes into pipeline quality; `/version` proves which commit is running. |
+| Build-metadata service as the app | Small code surface, so effort went into pipeline quality; `/version` proves which commit is running. 
 | Multi-stage Dockerfile | SDK image only for building; runtime image is smaller with fewer packages to scan. |
 | Restore before copying source | Keeps the dependency layer cached between builds. |
 | Non-root (`USER app`) | Limits blast radius if the app is compromised. |
